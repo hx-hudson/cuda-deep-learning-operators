@@ -1,0 +1,21 @@
+# compiled binaries
+vector_add
+matmul_naive
+*.out
+*.o
+*.exe
+
+# CUDA build files
+*.ptx
+*.cubin
+*.fatbin
+
+# editor files
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+
+# temporary files
+*.log
