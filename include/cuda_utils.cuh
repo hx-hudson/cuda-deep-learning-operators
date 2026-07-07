@@ -1,3 +1,5 @@
+#pragma once
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <cuda_runtime.h>
@@ -33,4 +35,10 @@ inline void matmul_cpu(int* a, int* b, int* c, int N, int M, int K) {
             c[row*M+col] = sum;
         }
     }
+}
+
+inline void init_matrix(int* a, int N, int M){
+    for(int i = 0; i < N; i++)
+        for(int j = 0; j < M; j++)
+            a[i*M+j] = rand();
 }
