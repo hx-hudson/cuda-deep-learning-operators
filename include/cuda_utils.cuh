@@ -4,6 +4,8 @@
 #include <stdlib.h>
 #include <cuda_runtime.h>
 
+#include <cmath>
+
 #define CHECK_CUDA(call) do { \
     cudaError_t err = call; \
     if (err != cudaSuccess) { \
@@ -12,21 +14,30 @@
     } \
 } while (0)
 
-inline bool check_result(int* ref, int* out, int size) {
+inline bool check_result(float* ref, float* out, int size) {
+    const float atol = 1e-3f;
+    const float rtol = 1e-3f;
+
     for (int i = 0; i < size; i++) {
-        if (ref[i] != out[i]) {
-            printf("Mismatch at %d: CPU %d, GPU %d\n",
-                   i, ref[i], out[i]);
+        float diff = std::fabs(ref[i] - out[i]);
+        float tolerance = atol + rtol * std::fabs(ref[i]);
+
+        if (diff > tolerance) {
+            printf(
+                "Mismatch at %d: CPU %f, GPU %f, diff %f, tolerance %f\n",
+                i, ref[i], out[i], diff, tolerance
+            );
             return false;
         }
     }
+
     return true;
 }
 
-inline void matmul_cpu(int* a, int* b, int* c, int N, int M, int K) {
+inline void matmul_cpu(float* a, float* b, float* c, int N, int M, int K) {
     for (int row = 0; row < N; row++) {
         for (int col = 0; col < M; col++) {
-            int sum = 0;
+            float sum = 0;
 
             for (int k = 0; k < K; k++) {
                 sum += a[row*K+k] * b[k*M+col];
@@ -37,8 +48,8 @@ inline void matmul_cpu(int* a, int* b, int* c, int N, int M, int K) {
     }
 }
 
-inline void init_matrix(int* a, int N, int M){
+inline void init_matrix(float* a, int N, int M){
     for(int i = 0; i < N; i++)
         for(int j = 0; j < M; j++)
-            a[i*M+j] = rand();
+            a[i*M+j] = rand() / 100;
 }

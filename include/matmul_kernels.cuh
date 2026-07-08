@@ -3,29 +3,29 @@
 #include <cuda_runtime.h>
 
 __global__ void matmul_naive(
-    int* a, int* b, int* c,
+    float* a, float* b, float* c,
     int N, int M, int K
 );
 
 __global__ void matmul_tiled(
-    int* a, int* b, int* c,
+    float* a, float* b, float* c,
     int N, int M, int K,
     int tile_size
 );
 
 template<int TILE>
 __global__ void matmul_tiled_constant
-(int* a, int* b, int* c, int N, int M, int K){
+(float* a, float* b, float* c, int N, int M, int K){
 
     int tx = threadIdx.x;
     int ty = threadIdx.y;
     int col = blockDim.x*blockIdx.x + tx;
     int row = blockDim.y*blockIdx.y + ty;
 
-    __shared__ int a_s[TILE*TILE];
-    __shared__ int b_s[TILE*TILE];
+    __shared__ float a_s[TILE*TILE];
+    __shared__ float b_s[TILE*TILE];
 
-    int sum = 0;
+    float sum = 0;
     int tile_size = TILE;
     int num_tiles = (K + tile_size - 1)/ tile_size;
     for(int i = 0; i < num_tiles; i++){
