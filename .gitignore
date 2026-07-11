@@ -3,6 +3,7 @@ vector_add
 matmul_naive
 matmul_benchmark
 benchmark
+softmax
 *.out
 *.o
 *.exe

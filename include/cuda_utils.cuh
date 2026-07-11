@@ -53,3 +53,23 @@ inline void init_matrix(float* a, int N, int M){
         for(int j = 0; j < M; j++)
             a[i*M+j] = rand() / 100;
 }
+
+inline void softmax_cpu(const float* x, float* y, int rows, int cols) {
+    for (int r = 0; r < rows; ++r) {
+        int row_offset = r * cols;
+
+        float max_val = x[row_offset];
+        for (int c = 1; c < cols; ++c) {
+            max_val = std::max(max_val, x[row_offset + c]);
+        }
+
+        float sum_exp = 0.0f;
+        for (int c = 0; c < cols; ++c) {
+            sum_exp += std::exp(x[row_offset + c] - max_val);
+        }
+
+        for (int c = 0; c < cols; ++c) {
+            y[row_offset + c] = std::exp(x[row_offset + c] - max_val) / sum_exp;
+        }
+    }
+}

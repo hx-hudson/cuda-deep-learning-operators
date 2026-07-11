@@ -1,197 +1,145 @@
 # CUDA-Accelerated Deep Learning Operators
 
-A CUDA learning project focused on implementing and optimizing common deep learning operators from scratch.
+A CUDA learning project that implements and optimizes common deep learning operators from scratch using FP32.
 
-The current stage focuses on **FP32 matrix multiplication (GEMM)** and compares hand-written CUDA kernels against NVIDIA cuBLAS.
+Test GPU: **NVIDIA GeForce RTX 5080 Laptop GPU**
 
-## Implemented Matrix Multiplication Kernels
+## Matrix Multiplication
 
-### 1. Naive CUDA MatMul
+### Implementation
 
-Each CUDA thread computes one output element of the result matrix directly from global memory.
+- **Naive CUDA:** one thread computes one output element directly from global memory.
+- **Tiled Shared Memory:** `16 x 16` blocks cooperatively load tiles of `A` and `B` into dynamic shared memory.
+- **Compile-Time Tiled:** uses the same tiling strategy with `matmul_tiled_constant<16>`, allowing the compiler to optimize loop bounds and indexing.
+- **cuBLAS SGEMM:** used as the optimized library baseline.
 
-This version serves as the baseline implementation.
+### Benchmark
 
-### 2. Tiled Shared-Memory MatMul
-
-The input matrices are divided into tiles. Threads in the same block cooperatively load tiles of `A` and `B` into dynamic shared memory and reuse them during computation.
-
-This implementation uses:
-
-- `16 x 16` thread blocks
-- dynamic shared memory
-- block-level tiling
-- coalesced global-memory loads
-
-### 3. Compile-Time Tiled MatMul
-
-This version uses the same shared-memory tiling strategy, but the tile size is fixed at compile time:
-
-```cpp
-matmul_tiled_constant<16>
-```
-
-Making the tile size a compile-time constant allows the compiler to optimize indexing and loop structure more aggressively.
-
-### 4. cuBLAS SGEMM
-
-`cublasSgemm` is used as the optimized NVIDIA library baseline.
-
-This comparison shows the remaining gap between a basic hand-written CUDA kernel and a production-level GEMM implementation.
-
----
-
-## Benchmark Methodology
-
-All matrix multiplication benchmarks use FP32 data.
-
-- GPU: NVIDIA GeForce RTX 5080 Laptop GPU
-- Tile size: `16 x 16`
 - Warm-up iterations: `10`
 - Timed iterations: `500`
-- Timing method: CUDA Events
-- Correctness test: compared against a CPU reference implementation
-- Correctness test size: `256 x 256 x 256`
-- Performance metric:
+- Timing: CUDA Events
+- Correctness: CPU reference, tested with `256 x 256 x 256`
+- Metric: `GFLOPS = 2 × N × M × K / execution_time`
 
-```text
-GFLOPS = 2 × N × M × K / execution_time
+| Matrix Size | Naive (ms) | Dynamic Tiled (ms) | Compile-Time Tiled (ms) | Compile-Time GFLOPS | cuBLAS (ms) | cuBLAS GFLOPS |
+|---:|---:|---:|---:|---:|---:|---:|
+| 512 | 0.130372 | 0.144321 | 0.097749 | 2746.16 | 0.030295 | 8860.86 |
+| 1024 | 0.953866 | 0.987538 | 0.649937 | 3304.14 | 0.121371 | 17693.52 |
+| 2048 | 7.251064 | 7.667174 | 5.229117 | 3285.42 | 0.772498 | 22239.38 |
+| 4096 | 68.344002 | 71.486374 | 50.667389 | 2712.57 | 6.628629 | 20734.15 |
+
+The compile-time tiled kernel is the fastest custom implementation, reaching a **1.33x–1.47x speedup** over the naive kernel. The dynamic tiled version is slightly slower because shared-memory reuse does not offset its synchronization and indexing overhead. cuBLAS remains **3.23x–7.64x faster** than the best custom kernel.
+
+---
+
+## ReLU
+
+### Implementation
+
+Each thread processes one element:
+
+```cpp
+y[i] = max(x[i], 0)
 ```
 
-All four implementations passed the correctness check.
+The kernel uses contiguous global-memory accesses and `256` threads per block. ReLU performs little computation and is primarily limited by memory bandwidth.
+
+### Benchmark
+
+- Warm-up iterations: `10`
+- Timed iterations: `500`
+- Timing: CUDA Events
+- Correctness: CPU reference
+
+| Elements | Time (ms) |
+|---:|---:|
+| 1,048,576 | 0.007443 |
+| 4,194,304 | 0.019389 |
+| 16,777,216 | 0.176785 |
+| 67,108,864 | 0.739134 |
+
+For large inputs, execution time scales approximately linearly with the number of elements, confirming that the kernel is memory-bandwidth-bound.
 
 ---
 
-## Performance Results
+## Row-Wise Softmax
 
-### 512 x 512 x 512
+### Implementation
 
-| Kernel | Time (ms) | GFLOPS | Speedup vs. Naive |
-|---|---:|---:|---:|
-| Naive CUDA | 0.130372 | 2059.00 | 1.00x |
-| Tiled Shared Memory | 0.144321 | 1859.99 | 0.90x |
-| Tiled Compile-Time | 0.097749 | 2746.16 | **1.33x** |
-| cuBLAS | 0.030295 | 8860.86 | **4.30x** |
+One CUDA block processes one row. Each thread handles multiple columns with a strided loop, allowing the same kernel to support different row widths.
 
-### 1024 x 1024 x 1024
+The numerically stable Softmax is computed in three stages:
 
-| Kernel | Time (ms) | GFLOPS | Speedup vs. Naive |
-|---|---:|---:|---:|
-| Naive CUDA | 0.953866 | 2251.35 | 1.00x |
-| Tiled Shared Memory | 0.987538 | 2174.58 | 0.97x |
-| Tiled Compile-Time | 0.649937 | 3304.14 | **1.47x** |
-| cuBLAS | 0.121371 | 17693.52 | **7.86x** |
+1. Find the row maximum.
+2. Compute and reduce `exp(x - max)`.
+3. Divide each stored exponential value by the row sum.
 
-### 2048 x 2048 x 2048
+Two reduction kernels were implemented:
 
-| Kernel | Time (ms) | GFLOPS | Speedup vs. Naive |
-|---|---:|---:|---:|
-| Naive CUDA | 7.251064 | 2369.29 | 1.00x |
-| Tiled Shared Memory | 7.667174 | 2240.70 | 0.95x |
-| Tiled Compile-Time | 5.229117 | 3285.42 | **1.39x** |
-| cuBLAS | 0.772498 | 22239.38 | **9.39x** |
+- **Shared-Memory Reduction:** tree reduction using shared memory and block-wide synchronization.
+- **Warp-Shuffle Reduction:** uses `__shfl_down_sync` inside each warp and shared memory only to combine per-warp results.
 
-### 4096 x 4096 x 4096
+The exponential values are temporarily stored in the output buffer so that `expf` is not computed twice.
 
-| Kernel | Time (ms) | GFLOPS | Speedup vs. Naive |
-|---|---:|---:|---:|
-| Naive CUDA | 68.344002 | 2010.99 | 1.00x |
-| Tiled Shared Memory | 71.486374 | 1922.59 | 0.96x |
-| Tiled Compile-Time | 50.667389 | 2712.57 | **1.35x** |
-| cuBLAS | 6.628629 | 20734.15 | **10.31x** |
+### Benchmark
 
----
+- Rows: `4096`
+- Threads per block: `128`
+- Warm-up iterations: `10`
+- Timed iterations: `500`
+- Timing: CUDA Events
+- Correctness: CPU reference
 
-## Performance Summary
+| Cols | Shared Memory (ms) | Warp Shuffle (ms) | Speedup |
+|---:|---:|---:|---:|
+| 32 | 0.015420 | 0.011873 | 1.30x |
+| 64 | 0.015545 | 0.011646 | 1.33x |
+| 100 | 0.018068 | 0.011418 | 1.58x |
+| 128 | 0.018029 | 0.011602 | 1.55x |
+| 256 | 0.018049 | 0.013966 | 1.29x |
+| 512 | 0.021439 | 0.017691 | 1.21x |
+| 1024 | 0.032033 | 0.030555 | 1.05x |
+| 2048 | 0.088949 | 0.088761 | 1.00x |
+| 4096 | 0.175801 | 0.175623 | 1.00x |
 
-The compile-time tiled kernel is the fastest hand-written implementation.
-
-Across the tested matrix sizes, it achieves approximately:
-
-- **1.33x to 1.47x speedup** over the naive CUDA kernel
-- up to **3.30 TFLOPS** on the tested workload
-
-The dynamic shared-memory tiled implementation does not outperform the naive kernel. Its performance ranges from approximately `0.90x` to `0.97x` of the naive implementation.
-
-cuBLAS remains substantially faster:
-
-- `4.30x` faster than naive at `512 x 512`
-- `7.86x` faster at `1024 x 1024`
-- `9.39x` faster at `2048 x 2048`
-- `10.31x` faster at `4096 x 4096`
-
-Compared with the best hand-written kernel, cuBLAS is approximately `3.23x` to `7.64x` faster.
-
----
-
-## Key Findings
-
-### Shared memory does not automatically improve performance
-
-The dynamic tiled implementation is slightly slower than the naive kernel even though it reduces repeated global-memory accesses.
-
-This shows that adding shared memory alone is not sufficient. Performance also depends on:
-
-- synchronization overhead
-- indexing overhead
-- compiler optimization opportunities
-- register usage
-- occupancy
-- tile size
-
-### Compile-time tile size significantly improves performance
-
-Changing the tile size from a runtime value to a compile-time template parameter produces a clear speedup.
-
-The best custom kernel reaches:
-
-```text
-3304.14 GFLOPS
-```
-
-for a `1024 x 1024 x 1024` matrix multiplication.
-
-This is approximately `1.47x` faster than the naive implementation.
-
-### The gap to cuBLAS grows with matrix size
-
-The cuBLAS speedup over the naive kernel increases from `4.30x` at size `512` to `10.31x` at size `4096`.
-
-This indicates that cuBLAS is much more effective at utilizing the GPU on large GEMM workloads.
+Warp Shuffle provides the largest improvement for short rows, where reduction and synchronization are a significant part of total execution time. For wide rows, `expf`, division, and global-memory traffic dominate, so the two reduction methods perform similarly.
 
 ---
 
 ## Build and Run
 
-Example build command:
+### Matrix Multiplication
 
 ```bash
-nvcc \
-    -Iinclude \
+nvcc -Iinclude \
     src/matmul_naive.cu \
     src/matmul_tiled.cu \
     src/matmul_tiled_constant.cu \
     benchmarks/matmul_benchmark.cu \
     -lcublas \
-    -o benchmark
+    -o matmul_benchmark
+
+./matmul_benchmark
 ```
 
-Run:
+### ReLU
 
 ```bash
-./benchmark
+nvcc -Iinclude \
+    src/relu.cu \
+    benchmarks/relu_benchmark.cu \
+    -o relu_benchmark
+
+./relu_benchmark
 ```
 
-## Main Result
+### Softmax
 
-The main result of the matrix multiplication optimization stage is:
+```bash
+nvcc -Iinclude \
+    src/softmax.cu \
+    benchmarks/softmax_benchmark.cu \
+    -o softmax_benchmark
 
-```text
-Naive CUDA
-    ↓
-Compile-Time Shared-Memory Tiling
-    ↓
-1.33x–1.47x speedup
+./softmax_benchmark
 ```
-
-The comparison against cuBLAS also demonstrates that basic shared-memory tiling is only the first step toward high-performance GEMM.
