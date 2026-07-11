@@ -4,6 +4,7 @@ matmul_naive
 matmul_benchmark
 benchmark
 softmax
+layernorm
 *.out
 *.o
 *.exe

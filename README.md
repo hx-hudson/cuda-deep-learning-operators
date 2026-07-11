@@ -106,6 +106,40 @@ Warp Shuffle provides the largest improvement for short rows, where reduction an
 
 ---
 
+## Row-Wise LayerNorm
+
+### Implementation
+
+One CUDA block processes one row, and each thread handles multiple columns with a strided loop. The kernel:
+
+1. Reduces the row sum to compute the mean.
+2. Reduces squared deviations to compute the variance.
+3. Normalizes the row and applies per-column `gamma` and `beta`.
+
+Both reductions use warp shuffle with `__shfl_down_sync`, while shared memory stores only one partial result per warp. `rsqrtf(variance + eps)` is computed once per row and reused during normalization.
+
+### Benchmark
+
+- Rows: `4096`
+- Threads per block: `128`
+- Warm-up iterations: `10`
+- Timed iterations: `500`
+- Timing: CUDA Events
+- Correctness: CPU reference
+
+| Cols | Time (ms) |
+|---:|---:|
+| 128 | 0.011318 |
+| 256 | 0.013329 |
+| 512 | 0.015657 |
+| 1024 | 0.023196 |
+| 2048 | 0.078079 |
+| 4096 | 0.199568 |
+
+Runtime grows slowly for short rows because block scheduling and reduction overhead dominate. For wider rows, per-element memory accesses and arithmetic become the main cost, causing execution time to scale more strongly with the number of columns.
+
+---
+
 ## Build and Run
 
 ### Matrix Multiplication
@@ -142,4 +176,15 @@ nvcc -Iinclude \
     -o softmax_benchmark
 
 ./softmax_benchmark
+```
+
+### LayerNorm
+
+```bash
+nvcc -Iinclude \
+    src/layernorm.cu \
+    benchmarks/layernorm_benchmark.cu \
+    -o layernorm_benchmark
+
+./layernorm_benchmark
 ```

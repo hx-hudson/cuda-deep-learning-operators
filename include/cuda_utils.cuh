@@ -73,3 +73,33 @@ inline void softmax_cpu(const float* x, float* y, int rows, int cols) {
         }
     }
 }
+
+void layer_norm_cpu
+(const float* x, const float* gamma, const float* beta, 
+float* y, int batch_size, int hidden_size, float eps = 1e-5f){
+
+    for (int b = 0; b < batch_size; ++b){
+        int offset = b * hidden_size;
+
+        float mean = 0.0f;
+        for (int i = 0; i < hidden_size; ++i) {
+            mean += x[offset + i];
+        }
+        mean /= hidden_size;
+
+        float var = 0.0f;
+        for (int i = 0; i < hidden_size; ++i) {
+            float diff = x[offset + i] - mean;
+            var += diff * diff;
+        }
+        var /= hidden_size;
+
+        float rstd = 1.0f / std::sqrt(var + eps);
+
+        for (int i = 0; i < hidden_size; ++i) {
+            float normalized = (x[offset + i] - mean) * rstd;
+            y[offset + i] = normalized * gamma[i] + beta[i];
+        }
+    }
+
+}
