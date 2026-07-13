@@ -140,6 +140,69 @@ Runtime grows slowly for short rows because block scheduling and reduction overh
 
 ---
 
+## Custom CUDA vs PyTorch
+
+### Benchmark Setup
+
+- Data type: `FP32`
+- Device: `NVIDIA GeForce RTX 5080 Laptop GPU`
+- Warm-up iterations: `20`
+- Timed iterations: `500`
+- Timing: CUDA Events
+- Execution mode: `torch.inference_mode()`
+- Ratio: `Custom / PyTorch`
+
+### ReLU
+
+- Input shape: `4096 x Cols`
+
+| Cols | Custom CUDA (ms) | PyTorch (ms) | Custom / PyTorch |
+|---:|---:|---:|---:|
+| 128 | 0.008300 | 0.009526 | 0.87 |
+| 256 | 0.010478 | 0.009314 | 1.12 |
+| 512 | 0.011841 | 0.010248 | 1.16 |
+| 1024 | 0.019338 | 0.013215 | 1.46 |
+
+### Softmax
+
+- Input shape: `4096 x Cols`
+- Reduction dimension: last dimension
+
+| Cols | Custom CUDA (ms) | PyTorch (ms) | Custom / PyTorch |
+|---:|---:|---:|---:|
+| 128 | 0.015453 | 0.009441 | 1.64 |
+| 256 | 0.019261 | 0.010911 | 1.77 |
+| 512 | 0.025043 | 0.012420 | 2.02 |
+| 1024 | 0.030190 | 0.019078 | 1.58 |
+
+### LayerNorm
+
+- Input shape: `4096 x Cols`
+- Normalized dimension: last dimension
+- Affine parameters: `gamma` and `beta`
+- Epsilon: `1e-5`
+
+| Cols | Custom CUDA (ms) | PyTorch (ms) | Custom / PyTorch |
+|---:|---:|---:|---:|
+| 128 | 0.017943 | 0.019689 | 0.91 |
+| 256 | 0.022046 | 0.019582 | 1.13 |
+| 512 | 0.026577 | 0.024804 | 1.07 |
+| 1024 | 0.029140 | 0.031687 | 0.92 |
+
+### Matrix Multiplication
+
+- Input matrices: `N x N`
+- Output matrix: `N x N`
+
+| N | Custom CUDA (ms) | PyTorch (ms) | Custom / PyTorch |
+|---:|---:|---:|---:|
+| 512 | 0.098758 | 0.030126 | 3.28 |
+| 1024 | 0.716952 | 0.129381 | 5.54 |
+| 2048 | 5.361661 | 0.799121 | 6.71 |
+| 4096 | 49.964867 | 6.677155 | 7.48 |
+
+---
+
 ## Build and Run
 
 ### Matrix Multiplication

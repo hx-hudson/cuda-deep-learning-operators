@@ -23,3 +23,10 @@ layernorm
 
 # temporary files
 *.log
+
+.venv/
+__pycache__/
+*.pyc
+build/
+*.egg-info/
+*.so
