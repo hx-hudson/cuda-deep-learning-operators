@@ -3,7 +3,7 @@
 
 #include <cfloat>
 
-__global__ void relu(float* x, float* y, int N);
+__global__ void relu(float* x, float* y, int64_t N);
 
 __global__ void softmax(float* x, float* y, int rows, int cols);
 
@@ -205,7 +205,7 @@ __global__ void softmax_warp_shuffle(
 }
 
 template<int BLOCK_SIZE>
-__global__ void layernorm
+__global__ void layernorm_kernel
 (const float* x, const float* gamma, const float* beta,
     float* y, int rows, int cols, float eps = 1e-5f){
     

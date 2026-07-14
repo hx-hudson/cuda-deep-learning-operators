@@ -27,7 +27,7 @@ void correctness_check(int rows, int cols){
 
     dim3 blockSize = 128;
     dim3 gridSize = rows;
-    layernorm<128><<<gridSize, blockSize>>>
+    layernorm_kernel<128><<<gridSize, blockSize>>>
             (d_x, d_gamma, d_beta, d_y, rows, cols);
 
     CHECK_CUDA(cudaGetLastError());

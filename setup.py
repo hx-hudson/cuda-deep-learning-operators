@@ -11,11 +11,15 @@ setup(
         CUDAExtension(
             name="custom_ops._C",
             sources=[
-                "src/bindings.cpp",
-                "src/relu.cu",
-                "src/softmax_warp_shuffle.cu",
-                "src/layernorm.cu",
-                "src/matmul_tiled.cu"
+                "pytorch/bindings.cpp",
+                "pytorch/relu_extension.cu",
+                "pytorch/softmax_extension.cu",
+                "pytorch/layernorm_extension.cu",
+                "pytorch/matmul_extension.cu",
+                "src/relu.cu"
+            ],
+            include_dirs=[
+                "include",
             ],
             extra_compile_args={
                 "cxx": ["-O3"],

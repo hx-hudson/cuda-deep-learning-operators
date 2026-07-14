@@ -1,18 +1,26 @@
 #pragma once
 
+#include <cstdio>
+#include <cstdlib>
 #include <stdio.h>
 #include <stdlib.h>
 #include <cuda_runtime.h>
 
 #include <cmath>
 
-#define CHECK_CUDA(call) do { \
-    cudaError_t err = call; \
-    if (err != cudaSuccess) { \
-        printf("CUDA error: %s\n", cudaGetErrorString(err)); \
-        exit(1); \
-    } \
-} while (0)
+#define CHECK_CUDA(call)                                                      \
+    do {                                                                      \
+        const cudaError_t err = (call);                                       \
+        if (err != cudaSuccess) {                                             \
+            std::fprintf(stderr,                                              \
+                         "CUDA error at %s:%d: %s (error code: %d)\n",        \
+                         __FILE__,                                            \
+                         __LINE__,                                            \
+                         cudaGetErrorString(err),                             \
+                         err);                                                \
+            std::exit(EXIT_FAILURE);                                          \
+        }                                                                     \
+    } while (0)
 
 inline bool check_result(float* ref, float* out, int size) {
     const float atol = 1e-3f;
@@ -74,7 +82,7 @@ inline void softmax_cpu(const float* x, float* y, int rows, int cols) {
     }
 }
 
-void layer_norm_cpu
+inline void layer_norm_cpu
 (const float* x, const float* gamma, const float* beta, 
 float* y, int batch_size, int hidden_size, float eps = 1e-5f){
 
