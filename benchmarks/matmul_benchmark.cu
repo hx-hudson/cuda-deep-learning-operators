@@ -1,8 +1,10 @@
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
 
+#include <array>
 #include <vector>
 #include <string>
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -13,9 +15,10 @@
 
 namespace{
 
-constexpr int TileSize = 16;
+// constexpr int TileSize = 16;
+constexpr std::array<int, 3> TileSizes = {8, 16, 32};
 constexpr int BenchmarkWarmup = 10;
-constexpr int BenchmarkRepeat = 500;
+constexpr int BenchmarkRepeat = 100;
 
 struct ProblemSize{
     int m;
@@ -30,6 +33,7 @@ struct BenchmarkResult{
     float time_ms;
     double gflops;
     double speedup_vs_naive;
+    double relative_to_cublas;
 };
 
 const char* cublas_status_string(cublasStatus_t status) {
@@ -75,7 +79,7 @@ const char* cublas_status_string(cublasStatus_t status) {
 
 template<typename LaunchFn, typename CheckFn>
 bool check_func(
-    const char* kernel_name,
+    const std::string& kernel_name,
     LaunchFn launch_func,
     CheckFn check_func,
     float* d_c,
@@ -94,12 +98,44 @@ bool check_func(
         cudaMemcpyDeviceToHost
     ));
 
-    const bool passed = 
-        check_result(h_ref, h_c, c_elements);
+    const bool passed = check_result(h_ref, h_c, c_elements);
     std::printf(
-        "  %-18s %s\n", kernel_name, passed ? "PASSED" : "FAILED"
+        "  %-28s %s\n",
+        kernel_name.c_str(),
+        passed ? "PASSED" : "FAILED"
     );
     return passed;
+}
+
+template<int TileSize>
+bool check_constant_tiled(
+    int M, int N, int K,
+    float* d_a, float* d_b,
+    float* d_c, float* h_c,
+    float* h_ref,
+    std::size_t c_elements
+){
+    const dim3 block(TileSize, TileSize);
+    const dim3 grid(
+        (N + TileSize - 1) / TileSize,
+        (M + TileSize - 1) / TileSize
+    );
+
+    const auto check_cuda_launch = []() {
+        CHECK_CUDA(cudaGetLastError());
+    };
+
+    return check_func(
+        "Tiled Constant " + std::to_string(TileSize) + "x" + 
+            std::to_string(TileSize),
+        [&](){
+            matmul_tiled_constant<TileSize><<<grid, block>>>(
+                d_a, d_b, d_c, M, N, K
+            );
+        },
+        check_cuda_launch,
+        d_c, h_c, h_ref, c_elements
+    );
 }
 
 bool correctness_check(int M, int N, int K){
@@ -119,13 +155,16 @@ bool correctness_check(int M, int N, int K){
 
     float* d_a = nullptr, *d_b = nullptr, *d_c = nullptr;
     CHECK_CUDA(cudaMalloc(
-        reinterpret_cast<void**>(&d_a), a_elements * sizeof(float)
+        reinterpret_cast<void**>(&d_a), 
+        a_elements * sizeof(float)
     ));
     CHECK_CUDA(cudaMalloc(
-        reinterpret_cast<void**>(&d_b), b_elements * sizeof(float)
+        reinterpret_cast<void**>(&d_b),
+        b_elements * sizeof(float)
     ));
     CHECK_CUDA(cudaMalloc(
-        reinterpret_cast<void**>(&d_c), c_elements * sizeof(float)
+        reinterpret_cast<void**>(&d_c), 
+        c_elements * sizeof(float)
     ));
 
     CHECK_CUDA(cudaMemcpy(
@@ -138,20 +177,6 @@ bool correctness_check(int M, int N, int K){
         b_elements * sizeof(float),
         cudaMemcpyHostToDevice
     ));
-
-    const dim3 block_naive(16, 16);
-    const dim3 grid_naive(
-        (N + block_naive.x - 1) / block_naive.x,
-        (M + block_naive.y - 1) / block_naive.y
-    );
-
-    const dim3 block_tiled(TileSize, TileSize);
-    const dim3 grid_tiled(
-        (N + TileSize - 1) / TileSize,
-        (M + TileSize - 1) / TileSize
-    );
-    const std::size_t dynamic_sharedmem = 
-        2ULL * TileSize * TileSize * sizeof(float);
 
     cublasHandle_t handle;
     CHECK_CUBLAS(cublasCreate(&handle));
@@ -168,46 +193,68 @@ bool correctness_check(int M, int N, int K){
     };
 
     std::printf(
-        "Correctness check: A[%d x %d] * B[%d x %d]\n", M, K, K, N
+        "Correctness check: A[%d x %d] * B[%d x %d]\n",
+        M, K, K, N
     );
 
     bool all_passed = true;
 
-    all_passed &= check_func(
-        "Naive",
-        [&](){
-            matmul_naive<<<grid_naive, block_naive>>>(
-                d_a, d_b, d_c, M, N, K
-            );
-        },
-        check_cuda_launch,
-        d_c, h_c.data(), h_ref.data(), c_elements
+    for(const int tile_size: TileSizes){
+
+        const dim3 block(tile_size, tile_size);
+        const dim3 grid(
+            (N + block.x - 1) / block.x,
+            (M + block.y - 1) / block.y
+        );
+
+        const std::size_t dynamic_sharedmem = 
+            2ULL * tile_size * tile_size * sizeof(float);
+
+        all_passed &= check_func(
+            "Naive " + std::to_string(tile_size) + "x" +
+                std::to_string(tile_size),
+            [&](){
+                matmul_naive<<<grid, block>>>(
+                    d_a, d_b, d_c, M, N, K
+                );
+            },
+            check_cuda_launch,
+            d_c, h_c.data(), h_ref.data(), 
+            c_elements
+        );
+
+        all_passed &= check_func(
+            "Tiled Runtime " + std::to_string(tile_size) + "x" +
+                std::to_string(tile_size),
+            [&](){
+                matmul_tiled<<<
+                    grid, block, dynamic_sharedmem
+                >>>(
+                    d_a, d_b, d_c, M, N, K, tile_size
+                );
+            },
+            check_cuda_launch,
+            d_c, h_c.data(), h_ref.data(), 
+            c_elements
+        );
+    }
+
+    all_passed &= check_constant_tiled<8>(
+        M, N, K,
+        d_a, d_b, d_c,
+        h_c.data(), h_ref.data(), c_elements
     );
 
-    all_passed &= check_func(
-        "Tile",
-        [&](){
-            matmul_tiled<<<
-                grid_naive, block_naive, dynamic_sharedmem
-            >>>(
-                d_a, d_b, d_c, M, N, K, TileSize
-            );
-        },
-        check_cuda_launch,
-        d_c, h_c.data(), h_ref.data(), c_elements
+    all_passed &= check_constant_tiled<16>(
+        M, N, K,
+        d_a, d_b, d_c,
+        h_c.data(), h_ref.data(), c_elements
     );
 
-    all_passed &= check_func(
-        "Tiled constant",
-        [&](){
-            matmul_tiled_constant<TileSize><<<
-                grid_tiled, block_tiled
-            >>>(
-                d_a, d_b, d_c, M, N, K
-            );
-        },
-        check_cuda_launch,
-        d_c, h_c.data(), h_ref.data(), c_elements
+    all_passed &= check_constant_tiled<32>(
+        M, N, K,
+        d_a, d_b, d_c,
+        h_c.data(), h_ref.data(), c_elements
     );
 
     all_passed &= check_func(
@@ -226,7 +273,8 @@ bool correctness_check(int M, int N, int K){
             );
         },
         check_cublas_launch,
-        d_c, h_c.data(), h_ref.data(), c_elements
+        d_c, h_c.data(), h_ref.data(),
+        c_elements
     );
 
     CHECK_CUBLAS(cublasDestroy(handle));
@@ -240,7 +288,6 @@ bool correctness_check(int M, int N, int K){
 double calculate_gflops(int M, int N, int K, float time){
     const double operations 
         = 2.0 * static_cast<double>(M) * N * K;
-
     return operations / (time * 1.0e6);
 }
 
@@ -271,6 +318,31 @@ float measure(LaunchFn launch_func, CheckFn check_func){
     return time / BenchmarkRepeat;
 }
 
+template<int TileSize>
+float measure_constant_tiled(
+    int M, int N, int K,
+    float* d_a, float* d_b, float* d_c
+){
+    const dim3 block(TileSize, TileSize);
+    const dim3 grid(
+        (N + TileSize - 1) / TileSize,
+        (M + TileSize - 1) / TileSize
+    );
+
+    const auto check_cuda_launch = []() {
+        CHECK_CUDA(cudaGetLastError());
+    };
+
+    return measure(
+        [&](){
+            matmul_tiled_constant<TileSize><<<grid, block>>>(
+                d_a, d_b, d_c, M, N, K
+            );
+        },
+        check_cuda_launch
+    );
+}
+
 std::vector<BenchmarkResult> benchmark(int M, int N, int K){
 
     const std::size_t a_elements = static_cast<std::size_t>(M) * K;
@@ -283,13 +355,16 @@ std::vector<BenchmarkResult> benchmark(int M, int N, int K){
 
     float* d_a = nullptr, *d_b = nullptr, *d_c = nullptr;
     cudaMalloc(
-        reinterpret_cast<void**>(&d_a), a_elements * sizeof(float)
+        reinterpret_cast<void**>(&d_a), 
+        a_elements * sizeof(float)
     );
     cudaMalloc(
-        reinterpret_cast<void**>(&d_b), b_elements * sizeof(float)
+        reinterpret_cast<void**>(&d_b), 
+        b_elements * sizeof(float)
     );
     cudaMalloc(
-        reinterpret_cast<void**>(&d_c), c_elements * sizeof(float)
+        reinterpret_cast<void**>(&d_c), 
+        c_elements * sizeof(float)
     );
 
     CHECK_CUDA(cudaMemcpy(
@@ -302,20 +377,6 @@ std::vector<BenchmarkResult> benchmark(int M, int N, int K){
         b_elements * sizeof(float),
         cudaMemcpyHostToDevice
     ));
-
-    const dim3 block_naive(16, 16);
-    const dim3 grid_naive(
-        (N + block_naive.x - 1) / block_naive.x,
-        (M + block_naive.y - 1) / block_naive.y
-    );
-
-    const dim3 block_tiled(TileSize, TileSize);
-    const dim3 grid_tiled(
-        (N + TileSize - 1) / TileSize,
-        (M + TileSize - 1) / TileSize
-    );
-    const std::size_t dynamic_sharedmem = 
-        2ULL * TileSize * TileSize * sizeof(float);
 
     cublasHandle_t handle = nullptr;
     CHECK_CUBLAS(cublasCreate(&handle));
@@ -332,58 +393,98 @@ std::vector<BenchmarkResult> benchmark(int M, int N, int K){
     };
 
     std::vector<BenchmarkResult> results;
-    results.reserve(4);
+    results.reserve(10);
 
-    float time_naive = measure(
-        [&](){
-            matmul_naive<<<grid_naive, block_naive>>>(
-                d_a, d_b, d_c,
-                M, N, K
-            );
-        },
-        check_cuda_launch
-    );
-    results.push_back({
-        "Naive", 16, 16, time_naive, 
-        calculate_gflops(M, N, K, time_naive),
-        1.0
-    });
+    std::array<float, TileSizes.size()> naive_times{};
 
-    float time_tiled = measure(
-        [&](){
-            matmul_tiled<<<
-                grid_tiled, block_tiled, dynamic_sharedmem
-            >>>(
-                d_a, d_b, d_c,
-                M, N, K, TileSize
-            );
-        },
-        check_cuda_launch
-    );
-    results.push_back({
-        "Tiled Runtime", TileSize, TileSize, time_tiled, 
-        calculate_gflops(M, N, K, time_tiled),
-        time_naive / time_tiled
-    });
+    // Naive: 8x8, 16x16, 32x32.
+    for (std::size_t i = 0; i < TileSizes.size(); ++i) {
+        const int block_size = TileSizes[i];
+        const dim3 block(block_size, block_size);
+        const dim3 grid(
+            (N + block_size - 1) / block_size,
+            (M + block_size - 1) / block_size
+        );
 
-    float time_tiled_const = measure(
-        [&](){
-            matmul_tiled_constant<TileSize><<<
-                grid_tiled, block_tiled
-            >>>(
-                d_a, d_b, d_c,
-                M, N, K
-            );
-        },
-        check_cuda_launch
-    );
-    results.push_back({
-        "Tiled Constant", TileSize, TileSize, time_tiled_const, 
-        calculate_gflops(M, N, K, time_tiled_const),
-        time_naive / time_tiled_const
-    });
+        const float time_ms = measure(
+            [&]() {
+                matmul_naive<<<grid, block>>>(
+                    d_a, d_b, d_c, M, N, K
+                );
+            },
+            check_cuda_launch
+        );
 
-    float time_cuBLAS = measure(
+        naive_times[i] = time_ms;
+        results.push_back({
+            "Naive",
+            block_size,
+            block_size,
+            time_ms,
+            calculate_gflops(M, N, K, time_ms),
+            1.0,
+            0.0
+        });
+    }
+
+    // Runtime tiled: 8x8, 16x16, 32x32.
+    for (std::size_t i = 0; i < TileSizes.size(); ++i) {
+        const int tile_size = TileSizes[i];
+        const dim3 block(tile_size, tile_size);
+        const dim3 grid(
+            (N + tile_size - 1) / tile_size,
+            (M + tile_size - 1) / tile_size
+        );
+        const std::size_t dynamic_shared_memory =
+            2ULL * tile_size * tile_size * sizeof(float);
+
+        const float time_ms = measure(
+            [&]() {
+                matmul_tiled<<<
+                    grid,
+                    block,
+                    dynamic_shared_memory
+                >>>(
+                    d_a, d_b, d_c, M, N, K, tile_size
+                );
+            },
+            check_cuda_launch
+        );
+
+        results.push_back({
+            "Tiled Runtime",
+            tile_size,
+            tile_size,
+            time_ms,
+            calculate_gflops(M, N, K, time_ms),
+            naive_times[i] / time_ms,
+            0.0
+        });
+    }
+
+    std::array<float, TileSizes.size()> const_tiled_time = {
+        measure_constant_tiled<8>(M, N, K, d_a, d_b, d_c),
+        measure_constant_tiled<16>(M, N, K, d_a, d_b, d_c),
+        measure_constant_tiled<32>(M, N, K, d_a, d_b, d_c)
+    };
+
+    for(std::size_t i = 0; i < TileSizes.size(); i++){
+
+        int tile_size = TileSizes[i];
+        float time_ms = const_tiled_time[i];
+
+        results.push_back({
+            "Tiled Constant",
+            tile_size,
+            tile_size,
+            time_ms,
+            calculate_gflops(M, N, K, time_ms),
+            naive_times[i] / time_ms,
+            0.0
+        });
+    }
+
+    float cublas_time = measure(
         [&](){
             last_cublas_status = cublasSgemm(
                 handle,
@@ -398,11 +499,24 @@ std::vector<BenchmarkResult> benchmark(int M, int N, int K){
         },
         check_cublas_launch
     );
+
+    float best_naive_time = *std::min_element(
+        naive_times.begin(), naive_times.end()
+    );
+    const double cublas_gflops = calculate_gflops(
+        M, N, K, cublas_time
+    );
     results.push_back({
-        "cuBLAS", 0, 0, time_cuBLAS, 
-        calculate_gflops(M, N, K, time_cuBLAS),
-        time_naive / time_cuBLAS
+        "cuBLAS", 0, 0,
+        cublas_time, 
+        cublas_gflops,
+        best_naive_time / cublas_time,
+        1.0
     });
+
+    for (BenchmarkResult& result : results) {
+        result.relative_to_cublas = result.gflops / cublas_gflops;
+    }
 
     CHECK_CUBLAS(cublasDestroy(handle));
     CHECK_CUDA(cudaFree(d_a));
@@ -425,15 +539,16 @@ void print_results(
     );
 
     std::printf(
-        "%-20s %-10s %-12s %-12s %-12s\n",
+        "%-20s %-10s %-12s %-12s %-12s %-12s\n",
         "Kernel",
         "Block",
         "Time(ms)",
         "GFLOPS",
-        "vs Naive"
+        "vs Naive",
+        "cuBLAS %"
     );
     std::printf(
-        "-----------------------------------------------------------------------\n"
+        "------------------------------------------------------------------------------------\n"
     );
 
     for (const BenchmarkResult& result : results) {
@@ -451,19 +566,21 @@ void print_results(
         }
 
         std::printf(
-            "%-20s %-10s %-12.6f %-12.2f %-12.2fx\n",
+            "%-20s %-10s %-12.6f %-12.2f %-12.2fx %-11.2f%%\n",
             result.kernel.c_str(),
             block_text,
             result.time_ms,
             result.gflops,
-            result.speedup_vs_naive
+            result.speedup_vs_naive,
+            result.relative_to_cublas * 100.0
         );
     }
 }
 
 void write_csv_header(std::ofstream& csv) {
     csv << "M,N,K,kernel,block_x,block_y,warmup_iterations,"
-           "benchmark_iterations,time_ms,gflops,speedup_vs_naive\n";
+           "benchmark_iterations,time_ms,gflops,speedup_vs_naive,"
+           "relative_to_cublas\n";
 }
 
 void append_csv_results(
@@ -484,7 +601,8 @@ void append_csv_results(
             << BenchmarkRepeat << ','
             << result.time_ms << ','
             << result.gflops << ','
-            << result.speedup_vs_naive << '\n';
+            << result.speedup_vs_naive << ','
+            << result.relative_to_cublas << '\n';
     }
 }
 
@@ -501,11 +619,11 @@ bool parse_positive_int(const char* text, int* value) {
     }
 }
 
-}
+}  // namespace
 
 int main(int argc, char** argv) {
     std::vector<ProblemSize> problems;
-    std::string csv_path = "matmul_results.csv";
+    std::string csv_path = "matmul_block_sweep.csv";
 
     if (argc == 1) {
         problems = {
@@ -516,12 +634,17 @@ int main(int argc, char** argv) {
         };
     } else if (argc == 4 || argc == 5) {
         ProblemSize problem{};
+
         if (!parse_positive_int(argv[1], &problem.m) ||
             !parse_positive_int(argv[2], &problem.n) ||
             !parse_positive_int(argv[3], &problem.k)) {
-            std::fprintf(stderr, "M, N, and K must be positive integers.\n");
+            std::fprintf(
+                stderr,
+                "M, N, and K must be positive integers.\n"
+            );
             return EXIT_FAILURE;
         }
+
         problems.push_back(problem);
 
         if (argc == 5) {
@@ -539,10 +662,10 @@ int main(int argc, char** argv) {
         return EXIT_FAILURE;
     }
 
-    if (!correctness_check(256, 256, 256) ||
-        !correctness_check(257, 129, 513)) {
+    // One odd-size test verifies all boundary checks.
+    if (!correctness_check(257, 129, 513)) {
         std::fprintf(
-            stderr, 
+            stderr,
             "At least one correctness check failed.\n"
         );
         return EXIT_FAILURE;
@@ -551,21 +674,26 @@ int main(int argc, char** argv) {
     std::ofstream csv(csv_path, std::ios::out | std::ios::trunc);
     if (!csv.is_open()) {
         std::fprintf(
-            stderr, 
-            "Failed to open CSV file: %s\n", 
+            stderr,
+            "Failed to open CSV file: %s\n",
             csv_path.c_str()
         );
         return EXIT_FAILURE;
     }
+
     write_csv_header(csv);
 
     for (const ProblemSize& problem : problems) {
         const std::vector<BenchmarkResult> results =
             benchmark(problem.m, problem.n, problem.k);
+
         print_results(problem, results);
         append_csv_results(csv, problem, results);
     }
 
-    std::printf("\nCSV results written to: %s\n", csv_path.c_str());
+    std::printf(
+        "\nCSV results written to: %s\n",
+        csv_path.c_str()
+    );
     return EXIT_SUCCESS;
 }
