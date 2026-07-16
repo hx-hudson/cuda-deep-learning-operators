@@ -89,6 +89,42 @@ def plot_relative_to_cublas(
     )
     plt.close()
 
+def plot_custom_gflops(data, configurations):
+    custom_data = data[data["kernel"] != "cuBLAS"]
+
+    plt.figure(figsize=(11, 7))
+
+    for configuration in configurations:
+        if configuration == "cuBLAS":
+            continue
+
+        subset = (
+            custom_data[
+                custom_data["configuration"] == configuration
+            ]
+            .sort_values("M")
+        )
+
+        plt.plot(
+            subset["M"],
+            subset["gflops"],
+            marker="o",
+            label=configuration,
+        )
+
+    plt.xlabel("Square matrix size (M = N = K)")
+    plt.ylabel("GFLOPS")
+    plt.title("Custom CUDA MatMul Performance")
+    plt.xticks(sorted(custom_data["M"].unique()))
+    plt.grid(True, alpha=0.3)
+    plt.legend(fontsize=8, ncol=2)
+    plt.tight_layout()
+    plt.savefig(
+        OUTPUT_DIR / "matmul_custom_gflops.png",
+        dpi=200,
+    )
+    plt.close()
+
 
 def main() -> None:
     if not CSV_PATH.exists():
@@ -122,6 +158,7 @@ def main() -> None:
 
     plot_gflops(data, configurations)
     plot_relative_to_cublas(data, configurations)
+    plot_custom_gflops(data, configurations)
 
     print("Generated:")
     print(OUTPUT_DIR / "matmul_gflops.png")

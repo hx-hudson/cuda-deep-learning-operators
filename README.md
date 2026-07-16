@@ -28,7 +28,23 @@ Test GPU: **NVIDIA GeForce RTX 5080 Laptop GPU**
 | 2048 | 7.251064 | 7.667174 | 5.229117 | 3285.42 | 0.772498 | 22239.38 |
 | 4096 | 68.344002 | 71.486374 | 50.667389 | 2712.57 | 6.628629 | 20734.15 |
 
-The compile-time tiled kernel is the fastest custom implementation, reaching a **1.33x–1.47x speedup** over the naive kernel. The dynamic tiled version is slightly slower because shared-memory reuse does not offset its synchronization and indexing overhead. cuBLAS remains **3.23x–7.64x faster** than the best custom kernel.
+The compile-time tiled kernel is the fastest custom implementation, reaching a **1.33x–1.47x speedup** over the naive kernel. The dynamic tiled version is slightly slower in these benchmarks, showing that shared-memory tiling alone does not guarantee a speedup. cuBLAS remains **3.23x–7.64x faster** than the best custom kernel.
+
+### Nsight Profiling
+
+Nsight Systems was used to inspect the execution timeline of the `2048 x 2048 x 2048` matrix multiplication benchmark.
+
+```bash
+nsys profile \
+    --trace=cuda,cublas \
+    --stats=true \
+    -o profiles/matmul_systems \
+    ./build/matmul_benchmark 2048 2048 2048 results/nsys_run.csv
+```
+
+![Nsight Systems timeline](docs/images/nsight_matmul_timeline.png)
+
+The timeline shows that GPU activity is dominated by the matrix multiplication kernels, while host-device memory transfers account for only a small fraction of the captured GPU time. Nsight Compute was also used to inspect the `16 x 16` naive, runtime-tiled, and compile-time-tiled kernels. The compile-time kernel had the shortest profiled duration and used `37` registers per thread, compared with `40` for the other two kernels, matching the performance ordering measured with CUDA Events.
 
 ---
 

@@ -20,6 +20,118 @@ constexpr std::array<int, 3> TileSizes = {8, 16, 32};
 constexpr int BenchmarkWarmup = 10;
 constexpr int BenchmarkRepeat = 100;
 
+enum class ProfileKernel {
+    Naive,
+    RuntimeTiled,
+    ConstantTiled
+};
+
+void run_profile(ProfileKernel kernel_type) {
+    constexpr int M = 2048;
+    constexpr int N = 2048;
+    constexpr int K = 2048;
+    constexpr int TileSize = 16;
+    constexpr int Warmup = 5;
+
+    const std::size_t a_elements =
+        static_cast<std::size_t>(M) * K;
+    const std::size_t b_elements =
+        static_cast<std::size_t>(K) * N;
+    const std::size_t c_elements =
+        static_cast<std::size_t>(M) * N;
+
+    std::vector<float> h_a(a_elements);
+    std::vector<float> h_b(b_elements);
+
+    init_matrix(h_a.data(), M, K);
+    init_matrix(h_b.data(), K, N);
+
+    float* d_a = nullptr;
+    float* d_b = nullptr;
+    float* d_c = nullptr;
+
+    CHECK_CUDA(cudaMalloc(
+        reinterpret_cast<void**>(&d_a),
+        a_elements * sizeof(float)
+    ));
+    CHECK_CUDA(cudaMalloc(
+        reinterpret_cast<void**>(&d_b),
+        b_elements * sizeof(float)
+    ));
+    CHECK_CUDA(cudaMalloc(
+        reinterpret_cast<void**>(&d_c),
+        c_elements * sizeof(float)
+    ));
+
+    CHECK_CUDA(cudaMemcpy(
+        d_a,
+        h_a.data(),
+        a_elements * sizeof(float),
+        cudaMemcpyHostToDevice
+    ));
+
+    CHECK_CUDA(cudaMemcpy(
+        d_b,
+        h_b.data(),
+        b_elements * sizeof(float),
+        cudaMemcpyHostToDevice
+    ));
+
+    const dim3 block(TileSize, TileSize);
+    const dim3 grid(
+        (N + TileSize - 1) / TileSize,
+        (M + TileSize - 1) / TileSize
+    );
+
+    const std::size_t shared_memory =
+        2ULL * TileSize * TileSize * sizeof(float);
+
+    auto launch = [&]() {
+        switch (kernel_type) {
+            case ProfileKernel::Naive:
+                matmul_naive<<<grid, block>>>(
+                    d_a, d_b, d_c, M, N, K
+                );
+                break;
+
+            case ProfileKernel::RuntimeTiled:
+                matmul_tiled<<<
+                    grid,
+                    block,
+                    shared_memory
+                >>>(
+                    d_a, d_b, d_c,
+                    M, N, K, TileSize
+                );
+                break;
+
+            case ProfileKernel::ConstantTiled:
+                matmul_tiled_constant<TileSize>
+                    <<<grid, block>>>(
+                        d_a, d_b, d_c,
+                        M, N, K
+                    );
+                break;
+        }
+
+        CHECK_CUDA(cudaGetLastError());
+    };
+
+    for (int i = 0; i < Warmup; ++i) {
+        launch();
+    }
+
+    CHECK_CUDA(cudaDeviceSynchronize());
+
+    // This is the launch collected by Nsight Compute.
+    launch();
+    CHECK_CUDA(cudaDeviceSynchronize());
+
+    CHECK_CUDA(cudaFree(d_a));
+    CHECK_CUDA(cudaFree(d_b));
+    CHECK_CUDA(cudaFree(d_c));
+}
+
 struct ProblemSize{
     int m;
     int n;
@@ -624,6 +736,30 @@ bool parse_positive_int(const char* text, int* value) {
 int main(int argc, char** argv) {
     std::vector<ProblemSize> problems;
     std::string csv_path = "matmul_block_sweep.csv";
+
+    if (argc == 3 &&
+        std::string(argv[1]) == "--profile") {
+
+        const std::string kernel_name = argv[2];
+
+        if (kernel_name == "naive") {
+            run_profile(ProfileKernel::Naive);
+        } else if (kernel_name == "runtime") {
+            run_profile(ProfileKernel::RuntimeTiled);
+        } else if (kernel_name == "constant") {
+            run_profile(ProfileKernel::ConstantTiled);
+        } else {
+            std::fprintf(
+                stderr,
+                "Unknown profile kernel: %s\n"
+                "Expected: naive, runtime, or constant\n",
+                kernel_name.c_str()
+            );
+            return EXIT_FAILURE;
+        }
+
+        return EXIT_SUCCESS;
+    }
 
     if (argc == 1) {
         problems = {
